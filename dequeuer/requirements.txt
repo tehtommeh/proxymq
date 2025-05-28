@@ -1,0 +1,6 @@
+fastapi
+pika
+requests
+uvicorn
+aio_pika
+httpx 
