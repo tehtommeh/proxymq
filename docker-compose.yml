@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+
+  enqueuer:
+    build:
+      context: ./enqueuer
+    container_name: enqueuer
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      ENQUEUER_POOL_SIZE: 100
+    depends_on:
+      - rabbitmq
+    ports:
+      - "8000:8000"
+
+  dequeuer_nginx:
+    build:
+      context: ./dequeuer
+    container_name: dequeuer_nginx
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      DEQUEUER_POOL_SIZE: 100
+      SERVICE_NAME: nginx
+      DOWNSTREAM_URL: http://nginx:80/
+    depends_on:
+      - rabbitmq
+  
+  dequeuer_google:
+    build:
+      context: ./dequeuer
+    container_name: dequeuer_google
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      DEQUEUER_POOL_SIZE: 100
+      SERVICE_NAME: google
+      DOWNSTREAM_URL: https://google.com
+    depends_on:
+      - rabbitmq
+
+  nginx:
+    container_name: nginx
+    image: nginx:latest
+    ports:
+      - "80:80"

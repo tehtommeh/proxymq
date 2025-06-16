@@ -28,35 +28,40 @@ async def process_queue():
                 async with httpx.AsyncClient() as client:
                     async for message in queue:
                         async with message.process():
-                            logger.info(f"Received message with correlation_id={getattr(message, 'correlation_id', None)}")
+                            correlation_id = getattr(message, 'correlation_id', None)
+                            logger.info(f"Received message with correlation_id={correlation_id}")
                             # Get all headers from message properties
                             headers = getattr(message, 'headers', {}) or {}
                             # Remove 'content-length' and 'host' because the HTTP client will set them correctly
                             headers.pop('content-length', None)
                             headers.pop('host', None)
+                            
                             # Forward the request to the real downstream API
-                            logger.debug(f"Forwarding request to downstream: {settings.DOWNSTREAM_URL}")
-                            resp = await client.post(
-                                settings.DOWNSTREAM_URL,
+                            request_method = headers.pop('x-http-method', 'POST')
+                            logger.debug(f"Forwarding {request_method} request to downstream: {settings.DOWNSTREAM_URL}")
+                            resp = await client.request(
+                                method=request_method,
+                                url=settings.DOWNSTREAM_URL,
                                 content=message.body,
-                                headers=headers
+                                headers=headers,
+                                follow_redirects=True
                             )
                             # Prepare response headers (convert to dict, remove hop-by-hop headers)
                             response_headers = dict(resp.headers)
                             response_headers.pop('content-length', None)
                             response_headers.pop('transfer-encoding', None)
                             # Publish the response to the reply queue
-                            logger.info(f"Publishing response to reply queue '{message.reply_to}' for correlation_id={getattr(message, 'correlation_id', None)}")
+                            logger.info(f"Publishing response to reply queue '{message.reply_to}' for correlation_id={correlation_id}")
                             await channel.default_exchange.publish(
                                 aio_pika.Message(
                                     body=resp.content,
-                                    correlation_id=message.correlation_id,
+                                    correlation_id=correlation_id,
                                     content_type=resp.headers.get('content-type', None),
                                     headers=response_headers,
                                 ),
                                 routing_key=message.reply_to
                             )
-                            logger.info(f"Response published for correlation_id={getattr(message, 'correlation_id', None)}")
+                            logger.info(f"Response published for correlation_id={correlation_id}")
             break
         except Exception as e:
             logger.warning(f"Waiting for RabbitMQ in dequeuer... Exception: {e}")

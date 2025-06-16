@@ -3,4 +3,5 @@ pika
 requests
 uvicorn
 aio_pika
-httpx 
+httpx
+pydantic-settings 

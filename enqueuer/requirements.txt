@@ -1,4 +1,5 @@
 fastapi
 pika
 uvicorn
-aio_pika 
+aio_pika
+pydantic-settings 
