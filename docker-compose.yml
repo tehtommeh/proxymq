@@ -50,6 +50,29 @@ services:
     depends_on:
       - rabbitmq
 
+  url-fetcher:
+    build:
+      context: ./url-fetcher
+    container_name: url-fetcher
+    environment:
+      BATCH_SIZE: 10
+    ports:
+      - "8001:8000"
+
+  dequeuer_url_fetcher:
+    build:
+      context: ./dequeuer
+    container_name: dequeuer_url_fetcher
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      DEQUEUER_POOL_SIZE: 100
+      SERVICE_NAME: url_fetcher
+      DOWNSTREAM_URL: http://url-fetcher:8000/fetch
+    depends_on:
+      - rabbitmq
+      - url-fetcher
+
   nginx:
     container_name: nginx
     image: nginx:latest

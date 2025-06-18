@@ -50,7 +50,8 @@ Once running, you can test the enqueueing and dequeueing:
 
 ```
 curl -v http://localhost:8000/google
-curl -v http://localhost:8000/nginx
+curl -v http://localhost:8000/
+curl -v -H 'Content-Type: application/json' -d '{"url": "https://www.google.com/"}' http://localhost:8000/url_fetcher
 ```
 
 You can also check out the RabbitMQ dashboard at http://localhost:15672/
