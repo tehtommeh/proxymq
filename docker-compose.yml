@@ -55,7 +55,7 @@ services:
       context: ./url-fetcher
     container_name: url-fetcher
     environment:
-      BATCH_SIZE: 10
+      BATCH_SIZE: 100
     ports:
       - "8001:8000"
 
@@ -68,7 +68,9 @@ services:
       RABBITMQ_PORT: 5672
       DEQUEUER_POOL_SIZE: 100
       SERVICE_NAME: url_fetcher
+      BATCH_MODE: true
       DOWNSTREAM_URL: http://url-fetcher:8000/fetch
+      BATCH_DOWNSTREAM_URL: http://url-fetcher:8000/fetch/batch
     depends_on:
       - rabbitmq
       - url-fetcher

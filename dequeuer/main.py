@@ -1,23 +1,139 @@
 import asyncio
 import aio_pika
 from aio_pika.pool import Pool
+from aio_pika.exceptions import QueueEmpty
 import httpx
 from settings import settings
 import logging
+from typing import List, Dict, Any
+import json
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dequeuer")
 
-# Global connection pool
+# Global connection pool and batch size
 RABBIT_POOL = None
+MAX_BATCH_SIZE = None
+
+async def get_batch_size() -> int:
+    """Get the maximum batch size from the downstream service."""
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(settings.BATCH_DOWNSTREAM_URL)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("batch_size", 1)
+        except Exception as e:
+            logger.error(f"Failed to get batch size from downstream service: {e}")
+            return 1
+
+async def process_single_message(client: httpx.AsyncClient, message: aio_pika.IncomingMessage, channel: aio_pika.Channel):
+    """Process a single message."""
+    correlation_id = getattr(message, 'correlation_id', None)
+    logger.info(f"Processing single message with correlation_id={correlation_id}")
+    headers = getattr(message, 'headers', {}) or {}
+    headers.pop('content-length', None)
+    headers.pop('host', None)
+    
+    request_method = headers.pop('x-http-method', 'POST')
+    resp = await client.request(
+        method=request_method,
+        url=settings.DOWNSTREAM_URL,
+        content=message.body,
+        headers=headers,
+        follow_redirects=True
+    )
+    
+    response_headers = dict(resp.headers)
+    response_headers.pop('content-length', None)
+    response_headers.pop('transfer-encoding', None)
+    
+    await channel.default_exchange.publish(
+        aio_pika.Message(
+            body=resp.content,
+            correlation_id=correlation_id,
+            content_type=resp.headers.get('content-type', None),
+            headers=response_headers,
+        ),
+        routing_key=message.reply_to
+    )
+    logger.info(f"Response published for correlation_id={correlation_id}")
+
+async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.IncomingMessage], channel: aio_pika.Channel):
+    """Process a batch of messages."""
+    if not messages:
+        return
+    
+    logger.info(f"Processing batch of {len(messages)} messages")
+    batch_request = {
+        "requests": [
+            json.loads(msg.body.decode()) for msg in messages
+        ]
+    }
+    
+    try:
+        response = await client.post(
+            settings.BATCH_DOWNSTREAM_URL,
+            json=batch_request
+        )
+        response.raise_for_status()
+        results = response.json()
+        
+        # Process each result and send back to respective reply queues
+        for msg, result in zip(messages, results):
+            correlation_id = getattr(msg, 'correlation_id', None)
+            response_headers = result.get("headers", {}) if result.get("status") == "success" else {}
+            
+            # Handle binary content properly
+            if result.get("status") == "success":
+                # For successful responses, content is base64 encoded in the JSON
+                response_content = result.get("content", b"")
+                if isinstance(response_content, str):
+                    response_content = response_content.encode()
+            else:
+                # For error responses, encode the error message
+                response_content = json.dumps(result).encode()
+            
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=response_content,
+                    correlation_id=correlation_id,
+                    content_type=response_headers.get('content-type', None),
+                    headers=response_headers,
+                ),
+                routing_key=msg.reply_to
+            )
+            logger.info(f"Batch response published for correlation_id={correlation_id}")
+    except Exception as e:
+        logger.error(f"Error processing batch: {e}")
+        # In case of error, send error response to all messages in batch
+        error_response = {"status": "error", "detail": str(e)}
+        for msg in messages:
+            correlation_id = getattr(msg, 'correlation_id', None)
+            await channel.default_exchange.publish(
+                aio_pika.Message(
+                    body=json.dumps(error_response).encode(),
+                    correlation_id=correlation_id,
+                    content_type="application/json",
+                    headers={
+                        "x-status-code": 500,  # Internal Server Error
+                        "content-type": "application/json"
+                    }
+                ),
+                routing_key=msg.reply_to
+            )
 
 async def process_queue():
-    global RABBIT_POOL
+    global RABBIT_POOL, MAX_BATCH_SIZE
+    
+    if settings.BATCH_MODE:
+        MAX_BATCH_SIZE = await get_batch_size()
+        logger.info(f"Batch mode enabled with max batch size: {MAX_BATCH_SIZE}")
+    
     while True:
         try:
             logger.info("Attempting to acquire RabbitMQ connection from pool...")
-            # Try to acquire a connection from the pool
             async with RABBIT_POOL.acquire() as connection:
                 logger.info("RabbitMQ connection acquired. Setting up channel and queue...")
                 channel = await connection.channel()
@@ -26,45 +142,63 @@ async def process_queue():
                 logger.info(f"Declared queue '{queue_name}', waiting for messages...")
 
                 async with httpx.AsyncClient() as client:
-                    async for message in queue:
-                        async with message.process():
-                            correlation_id = getattr(message, 'correlation_id', None)
-                            logger.info(f"Received message with correlation_id={correlation_id}")
-                            # Get all headers from message properties
-                            headers = getattr(message, 'headers', {}) or {}
-                            # Remove 'content-length' and 'host' because the HTTP client will set them correctly
-                            headers.pop('content-length', None)
-                            headers.pop('host', None)
-                            
-                            # Forward the request to the real downstream API
-                            request_method = headers.pop('x-http-method', 'POST')
-                            logger.debug(f"Forwarding {request_method} request to downstream: {settings.DOWNSTREAM_URL}")
-                            resp = await client.request(
-                                method=request_method,
-                                url=settings.DOWNSTREAM_URL,
-                                content=message.body,
-                                headers=headers,
-                                follow_redirects=True
-                            )
-                            # Prepare response headers (convert to dict, remove hop-by-hop headers)
-                            response_headers = dict(resp.headers)
-                            response_headers.pop('content-length', None)
-                            response_headers.pop('transfer-encoding', None)
-                            # Publish the response to the reply queue
-                            logger.info(f"Publishing response to reply queue '{message.reply_to}' for correlation_id={correlation_id}")
-                            await channel.default_exchange.publish(
-                                aio_pika.Message(
-                                    body=resp.content,
-                                    correlation_id=correlation_id,
-                                    content_type=resp.headers.get('content-type', None),
-                                    headers=response_headers,
-                                ),
-                                routing_key=message.reply_to
-                            )
-                            logger.info(f"Response published for correlation_id={correlation_id}")
+                    if not settings.BATCH_MODE:
+                        # Single message processing mode
+                        async for message in queue:
+                            async with message.process():
+                                await process_single_message(client, message, channel)
+                    else:
+                        # Batch processing mode
+                        while True:
+                            batch = []
+                            try:
+                                for _ in range(MAX_BATCH_SIZE):
+                                    try:
+                                        message = await queue.get(timeout=0.1)  # Small timeout to collect batch
+                                        if message:
+                                            batch.append(message)
+                                    except QueueEmpty:
+                                        break  # No more messages available right now
+                                
+                                if batch:
+                                    # Process all messages in the batch
+                                    await process_batch(client, batch, channel)
+                                    # Acknowledge all messages in the batch
+                                    for message in batch:
+                                        await message.ack()
+                                else:
+                                    # No messages available, small sleep to prevent tight loop
+                                    await asyncio.sleep(0.1)
+                            except Exception as e:
+                                logger.error(f"Error processing batch: {e}", exc_info=True)
+                                # For each message in the failed batch, send an error response and ack
+                                error_response = {
+                                    "status": "error",
+                                    "detail": str(e)
+                                }
+                                for message in batch:
+                                    try:
+                                        # Send error response back through reply queue
+                                        await channel.default_exchange.publish(
+                                            aio_pika.Message(
+                                                body=json.dumps(error_response).encode(),
+                                                correlation_id=message.correlation_id,
+                                                content_type="application/json",
+                                                headers={
+                                                    "x-status-code": 500,  # Internal Server Error
+                                                    "content-type": "application/json"
+                                                }
+                                            ),
+                                            routing_key=message.reply_to
+                                        )
+                                        # Acknowledge the message since we've handled the error
+                                        await message.ack()
+                                    except Exception as send_error:
+                                        logger.error(f"Error sending error response: {send_error}", exc_info=True)
+                                await asyncio.sleep(1)  # Wait a bit before processing more messages
             break
         except Exception as e:
-            logger.warning(f"Waiting for RabbitMQ in dequeuer... Exception: {e}")
+            logger.warning(f"Error in process_queue: {e}", exc_info=True)
             await asyncio.sleep(2)
 
 # Pool setup/teardown

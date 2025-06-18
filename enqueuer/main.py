@@ -80,6 +80,8 @@ async def proxy(service: str, request: Request):
                 logger.info(f"Received message from reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
                 response_body = incoming_message.body
                 response_headers = incoming_message.headers or {}
+                # Get status code from headers, default to 200 if not present
+                status_code = response_headers.pop('x-status-code', 200)
                 await incoming_message.ack()
                 logger.info(f"Acknowledged message from reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
             finally:
@@ -87,7 +89,7 @@ async def proxy(service: str, request: Request):
                 logger.info(f"Cancelled consumer on reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
                 await reply_q.delete()
                 logger.info(f"Deleted reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
-            return Response(content=response_body, headers=response_headers)
+            return Response(content=response_body, headers=response_headers, status_code=status_code)
     except Exception as e:
         logger.error(f"Error proxying request for service '{service}' with correlation_id '{correlation_id}': {e}")
         logger.error(traceback.format_exc())
