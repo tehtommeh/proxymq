@@ -24,6 +24,8 @@ async def shutdown_event():
 
 class FetchRequest(BaseModel):
     url: HttpUrl
+class BatchFetchRequest(BaseModel):
+    requests: List[FetchRequest]
 
 class BatchResponse(BaseModel):
     batch_size: int
@@ -48,13 +50,9 @@ async def fetch_url(request: FetchRequest):
             raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/fetch/batch")
-async def fetch_batch(requests: List[FetchRequest]):
+async def fetch_batch(batch_request: BatchFetchRequest):
     """Fetch multiple URLs in batch."""
-    if len(requests) > settings.BATCH_SIZE:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Batch size exceeds maximum allowed size of {settings.BATCH_SIZE}"
-        )
+    requests = batch_request.requests
 
     async with httpx.AsyncClient() as client:
         tasks = []
