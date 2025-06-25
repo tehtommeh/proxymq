@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     RABBITMQ_HOST: str = "rabbitmq"
     RABBITMQ_PORT: int = 5672
-    ENQUEUER_REPLY_TIMEOUT: int = 30
+    ENQUEUER_REPLY_TIMEOUT: int = 120
     ENQUEUER_POOL_SIZE: int = 10
 
     class Config:
