@@ -1,0 +1,132 @@
+{
+  "id": null,
+  "title": "ProxyMQ Overview",
+  "tags": ["proxymq", "overview"],
+  "timezone": "browser",
+  "schemaVersion": 36,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Enqueuer Requests (nginx)",
+      "targets": [
+        {
+          "expr": "sum(enqueuer_requests_total{service=\"nginx\"})",
+          "legendFormat": "nginx"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Dequeuer Processed (nginx)",
+      "targets": [
+        {
+          "expr": "sum(dequeuer_processed_total{service=\"nginx\"})",
+          "legendFormat": "nginx"
+        }
+      ],
+      "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Dequeuer Failed (nginx)",
+      "targets": [
+        {
+          "expr": "sum(dequeuer_failed_total{service=\"nginx\"})",
+          "legendFormat": "nginx"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Enqueuer Requests (google)",
+      "targets": [
+        {
+          "expr": "sum(enqueuer_requests_total{service=\"google\"})",
+          "legendFormat": "google"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 4, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Dequeuer Processed (google)",
+      "targets": [
+        {
+          "expr": "sum(dequeuer_processed_total{service=\"google\"})",
+          "legendFormat": "google"
+        }
+      ],
+      "gridPos": {"x": 6, "y": 4, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Dequeuer Failed (google)",
+      "targets": [
+        {
+          "expr": "sum(dequeuer_failed_total{service=\"google\"})",
+          "legendFormat": "google"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 4, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Enqueuer Requests (url_fetcher)",
+      "targets": [
+        {
+          "expr": "sum(enqueuer_requests_total{service=\"url_fetcher\"})",
+          "legendFormat": "url_fetcher"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 8, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Dequeuer Processed (url_fetcher)",
+      "targets": [
+        {
+          "expr": "sum(dequeuer_processed_total{service=\"url_fetcher\"})",
+          "legendFormat": "url_fetcher"
+        }
+      ],
+      "gridPos": {"x": 6, "y": 8, "w": 6, "h": 4}
+    },
+    {
+      "type": "stat",
+      "title": "Dequeuer Failed (url_fetcher)",
+      "targets": [
+        {
+          "expr": "sum(dequeuer_failed_total{service=\"url_fetcher\"})",
+          "legendFormat": "url_fetcher"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 8, "w": 6, "h": 4}
+    },
+    {
+      "type": "graph",
+      "title": "Enqueuer Request Latency (seconds)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(enqueuer_request_latency_seconds_bucket[1m])) by (le, service))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8}
+    },
+    {
+      "type": "graph",
+      "title": "Dequeuer Processing Latency (seconds)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(dequeuer_processing_latency_seconds_bucket[1m])) by (le, service))",
+          "legendFormat": "{{service}}"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8}
+    }
+  ]
+} 

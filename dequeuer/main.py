@@ -7,6 +7,8 @@ from settings import settings
 import logging
 from typing import List, Dict, Any
 import json
+from prometheus_client import Counter, Histogram, start_http_server
+import time
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -15,6 +17,14 @@ logger = logging.getLogger("dequeuer")
 # Global connection pool and batch size
 RABBIT_POOL = None
 MAX_BATCH_SIZE = None
+
+# Prometheus metrics definitions
+PROCESSED_TOTAL = Counter("dequeuer_processed_total", "Total messages processed", ["service", "status_code", "batch_size"])
+FAILED_TOTAL = Counter("dequeuer_failed_total", "Total failed messages", ["service", "status_code", "batch_size"])
+PROCESSING_LATENCY = Histogram("dequeuer_processing_latency_seconds", "Message processing latency", ["service", "status_code", "batch_size"])
+
+# Start Prometheus metrics server on port 8001
+start_http_server(8001)
 
 async def get_batch_size() -> int:
     """Get the maximum batch size from the downstream service."""
@@ -37,28 +47,40 @@ async def process_single_message(client: httpx.AsyncClient, message: aio_pika.In
     headers.pop('host', None)
     
     request_method = headers.pop('x-http-method', 'POST')
-    resp = await client.request(
-        method=request_method,
-        url=settings.DOWNSTREAM_URL,
-        content=message.body,
-        headers=headers,
-        follow_redirects=True
-    )
-    
-    response_headers = dict(resp.headers)
-    response_headers.pop('content-length', None)
-    response_headers.pop('transfer-encoding', None)
-    
-    await channel.default_exchange.publish(
-        aio_pika.Message(
-            body=resp.content,
-            correlation_id=correlation_id,
-            content_type=resp.headers.get('content-type', None),
-            headers=response_headers,
-        ),
-        routing_key=message.reply_to
-    )
-    logger.info(f"Response published for correlation_id={correlation_id}")
+    service = settings.SERVICE_NAME
+    start = time.time()
+    status_code = 500
+    batch_size = 1
+    try:
+        resp = await client.request(
+            method=request_method,
+            url=settings.DOWNSTREAM_URL,
+            content=message.body,
+            headers=headers,
+            follow_redirects=True
+        )
+        status_code = resp.status_code
+        response_headers = dict(resp.headers)
+        response_headers.pop('content-length', None)
+        response_headers.pop('transfer-encoding', None)
+        
+        await channel.default_exchange.publish(
+            aio_pika.Message(
+                body=resp.content,
+                correlation_id=correlation_id,
+                content_type=resp.headers.get('content-type', None),
+                headers=response_headers,
+            ),
+            routing_key=message.reply_to
+        )
+        PROCESSED_TOTAL.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).inc()
+        logger.info(f"Response published for correlation_id={correlation_id}")
+    except Exception as e:
+        FAILED_TOTAL.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).inc()
+        logger.error(f"Error processing single message: {e}")
+        raise
+    finally:
+        PROCESSING_LATENCY.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).observe(time.time() - start)
 
 async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.IncomingMessage], channel: aio_pika.Channel):
     """Process a batch of messages."""
@@ -72,6 +94,9 @@ async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.Incom
         ]
     }
     
+    service = settings.SERVICE_NAME
+    start = time.time()
+    batch_size = len(messages)
     try:
         response = await client.post(
             settings.BATCH_DOWNSTREAM_URL,
@@ -91,9 +116,11 @@ async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.Incom
                 response_content = result.get("content", b"")
                 if isinstance(response_content, str):
                     response_content = response_content.encode()
+                status_code = result.get("status_code", 200)
             else:
                 # For error responses, encode the error message
                 response_content = json.dumps(result).encode()
+                status_code = result.get("status_code", 500)
             
             await channel.default_exchange.publish(
                 aio_pika.Message(
@@ -104,8 +131,11 @@ async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.Incom
                 ),
                 routing_key=msg.reply_to
             )
+            PROCESSED_TOTAL.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).inc()
             logger.info(f"Batch response published for correlation_id={correlation_id}")
     except Exception as e:
+        for msg in messages:
+            FAILED_TOTAL.labels(service=service, status_code="500", batch_size=str(batch_size)).inc()
         logger.error(f"Error processing batch: {e}")
         # In case of error, send error response to all messages in batch
         error_response = {"status": "error", "detail": str(e)}
@@ -123,6 +153,10 @@ async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.Incom
                 ),
                 routing_key=msg.reply_to
             )
+    finally:
+        # Use status_code 200 if all succeeded, 500 if any failed (approximation)
+        status_code = "200"
+        PROCESSING_LATENCY.labels(service=service, status_code=status_code, batch_size=str(batch_size)).observe(time.time() - start)
 
 async def process_queue():
     global RABBIT_POOL, MAX_BATCH_SIZE

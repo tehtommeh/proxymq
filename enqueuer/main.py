@@ -6,6 +6,8 @@ from fastapi.responses import Response
 import asyncio
 import logging
 import traceback
+from prometheus_client import Counter, Histogram, generate_latest
+import time
 
 app = FastAPI()
 
@@ -14,6 +16,13 @@ RABBIT_POOL = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("enqueuer")
+
+# Prometheus metrics definitions
+REQUESTS_TOTAL = Counter("enqueuer_requests_total", "Total HTTP requests received", ["service", "method"])
+REQUESTS_PUBLISHED = Counter("enqueuer_requests_published_total", "Total requests published to RabbitMQ", ["service"])
+REQUESTS_FAILED = Counter("enqueuer_requests_failed_total", "Total failed requests", ["service"])
+REQUEST_LATENCY = Histogram("enqueuer_request_latency_seconds", "Request processing latency", ["service"])
+RESPONSE_CODES = Counter("enqueuer_response_codes_total", "HTTP response codes returned", ["service", "status_code"])
 
 @app.on_event("startup")
 async def startup_event():
@@ -38,24 +47,27 @@ async def shutdown_event():
         await RABBIT_POOL.close()
         logger.info("RabbitMQ pool closed.")
 
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type="text/plain")
+
 @app.api_route("/{service}", methods=["GET", "POST", "PUT"])
 async def proxy(service: str, request: Request):
+    start = time.time()
+    REQUESTS_TOTAL.labels(service=service, method=request.method).inc()
     correlation_id = str(uuid.uuid4())
     reply_queue = f"reply_{correlation_id}"
     service_queue = f"{service}_requests"
     logger.info(f"Received request for service '{service}' with correlation_id '{correlation_id}'")
+    status_code = 500
     try:
         body_bytes = await request.body()
-        # Add HTTP method to headers
         headers = dict(request.headers)
         headers["x-http-method"] = request.method
-        # Use a pooled connection
         async with RABBIT_POOL.acquire() as connection:
             channel = await connection.channel()
             logger.info(f"Channel acquired for service '{service}', declaring reply queue '{reply_queue}'")
-            # Declare reply queue (auto-delete)
             reply_q = await channel.declare_queue(reply_queue, exclusive=True, auto_delete=True)
-            # Publish request to service queue
             await channel.default_exchange.publish(
                 aio_pika.Message(
                     body=body_bytes,
@@ -65,9 +77,8 @@ async def proxy(service: str, request: Request):
                 ),
                 routing_key=service_queue
             )
+            REQUESTS_PUBLISHED.labels(service=service).inc()
             logger.info(f"Published message to '{service_queue}' with correlation_id '{correlation_id}'")
-            # Wait for response using a consumer
-            logger.info(f"Waiting for response on reply queue '{reply_queue}' with timeout {settings.ENQUEUER_REPLY_TIMEOUT}s (consume mode)")
             response_future = asyncio.get_event_loop().create_future()
             
             async def on_message(message: aio_pika.IncomingMessage):
@@ -80,7 +91,6 @@ async def proxy(service: str, request: Request):
                 logger.info(f"Received message from reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
                 response_body = incoming_message.body
                 response_headers = incoming_message.headers or {}
-                # Get status code from headers, default to 200 if not present
                 status_code = response_headers.pop('x-status-code', 200)
                 await incoming_message.ack()
                 logger.info(f"Acknowledged message from reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
@@ -89,8 +99,13 @@ async def proxy(service: str, request: Request):
                 logger.info(f"Cancelled consumer on reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
                 await reply_q.delete()
                 logger.info(f"Deleted reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
+            RESPONSE_CODES.labels(service=service, status_code=str(status_code)).inc()
             return Response(content=response_body, headers=response_headers, status_code=status_code)
     except Exception as e:
+        REQUESTS_FAILED.labels(service=service).inc()
+        RESPONSE_CODES.labels(service=service, status_code=str(status_code)).inc()
         logger.error(f"Error proxying request for service '{service}' with correlation_id '{correlation_id}': {e}")
         logger.error(traceback.format_exc())
         return Response(content=b"Internal Server Error", status_code=500)
+    finally:
+        REQUEST_LATENCY.labels(service=service).observe(time.time() - start)

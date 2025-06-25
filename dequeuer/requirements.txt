@@ -4,4 +4,5 @@ requests
 uvicorn
 aio_pika
 httpx
-pydantic-settings 
+pydantic-settings
+prometheus_client 

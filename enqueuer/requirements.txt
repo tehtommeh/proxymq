@@ -2,4 +2,5 @@ fastapi
 pika
 uvicorn
 aio_pika
-pydantic-settings 
+pydantic-settings
+prometheus_client 
