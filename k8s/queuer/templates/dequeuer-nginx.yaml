@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dequeuer-nginx
+  namespace: proxymq
+  labels:
+    app: dequeuer-nginx
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: dequeuer-nginx
+  template:
+    metadata:
+      labels:
+        app: dequeuer-nginx
+    spec:
+      containers:
+      - name: dequeuer
+        image: {{ .Values.dequeuer.image }}
+        imagePullPolicy: Always  # For local development
+        ports:
+        - containerPort: 8001
+          name: http
+        env:
+        - name: RABBITMQ_HOST
+          value: "rabbitmq"
+        - name: RABBITMQ_PORT
+          value: "5672"
+        - name: DEQUEUER_POOL_SIZE
+          value: "100"
+        - name: SERVICE_NAME
+          value: "nginx"
+        - name: DOWNSTREAM_URL
+          value: "http://localhost:80/"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      - name: nginx
+        image: {{ .Values.nginx.image }}
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"

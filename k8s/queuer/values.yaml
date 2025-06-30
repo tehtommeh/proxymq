@@ -1,0 +1,8 @@
+enqueuer:
+  image: enqueuer:latest
+dequeuer:
+  image: dequeuer:latest
+rabbitmq:
+  image: rabbitmq:4-management
+nginx:
+  image: nginx:latest

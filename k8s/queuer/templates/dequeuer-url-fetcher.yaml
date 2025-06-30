@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dequeuer-url-fetcher
+  namespace: proxymq
+  labels:
+    app: dequeuer-url-fetcher
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: dequeuer-url-fetcher
+  template:
+    metadata:
+      labels:
+        app: dequeuer-url-fetcher
+    spec:
+      containers:
+      - name: dequeuer
+        image: {{ .Values.dequeuer.image }}
+        imagePullPolicy: Always  # For local development
+        env:
+        - name: RABBITMQ_HOST
+          value: "rabbitmq"
+        - name: RABBITMQ_PORT
+          value: "5672"
+        - name: DEQUEUER_POOL_SIZE
+          value: "100"
+        - name: SERVICE_NAME
+          value: "url_fetcher"
+        - name: BATCH_MODE
+          value: "true"
+        - name: DOWNSTREAM_URL
+          value: "http://localhost:8000/fetch"
+        - name: BATCH_DOWNSTREAM_URL
+          value: "http://localhost:8000/fetch/batch"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      - name: url-fetcher
+        image: {{ .Values.url_fetcher.image }}
+        imagePullPolicy: Always  # For local development
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: BATCH_SIZE
+          value: "100"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"

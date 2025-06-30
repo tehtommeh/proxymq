@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: enqueuer
+  namespace: proxymq
+  labels:
+    app: enqueuer
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: enqueuer
+  template:
+    metadata:
+      labels:
+        app: enqueuer
+    spec:
+      containers:
+      - name: enqueuer
+        image: {{ .Values.enqueuer.image }}
+        imagePullPolicy: Never  # For local development
+        ports:
+        - containerPort: 8000
+          name: http
+        env:
+        - name: RABBITMQ_HOST
+          value: "rabbitmq"
+        - name: RABBITMQ_PORT
+          value: "5672"
+        - name: ENQUEUER_POOL_SIZE
+          value: "100"
+        - name: ENQUEUER_REPLY_TIMEOUT
+          value: "120"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: enqueuer
+  namespace: proxymq
+  labels:
+    app: enqueuer
+spec:
+  selector:
+    app: enqueuer
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+  type: ClusterIP 
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: proxymq-ingress
+  namespace: proxymq
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  rules:
+  - host: proxymq.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: enqueuer
+            port:
+              number: 8000
