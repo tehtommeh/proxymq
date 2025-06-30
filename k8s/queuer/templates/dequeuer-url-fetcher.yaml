@@ -15,32 +15,34 @@ spec:
       labels:
         app: dequeuer-url-fetcher
     spec:
+      initContainers:
+        - name: dequeuer
+          image: {{ .Values.dequeuer.image }}
+          imagePullPolicy: Always  # For local development
+          env:
+          - name: RABBITMQ_HOST
+            value: "rabbitmq"
+          - name: RABBITMQ_PORT
+            value: "5672"
+          - name: DEQUEUER_POOL_SIZE
+            value: "100"
+          - name: SERVICE_NAME
+            value: "url_fetcher"
+          - name: BATCH_MODE
+            value: "true"
+          - name: DOWNSTREAM_URL
+            value: "http://localhost:8000/fetch"
+          - name: BATCH_DOWNSTREAM_URL
+            value: "http://localhost:8000/fetch/batch"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          restartPolicy: Always
       containers:
-      - name: dequeuer
-        image: {{ .Values.dequeuer.image }}
-        imagePullPolicy: Always  # For local development
-        env:
-        - name: RABBITMQ_HOST
-          value: "rabbitmq"
-        - name: RABBITMQ_PORT
-          value: "5672"
-        - name: DEQUEUER_POOL_SIZE
-          value: "100"
-        - name: SERVICE_NAME
-          value: "url_fetcher"
-        - name: BATCH_MODE
-          value: "true"
-        - name: DOWNSTREAM_URL
-          value: "http://localhost:8000/fetch"
-        - name: BATCH_DOWNSTREAM_URL
-          value: "http://localhost:8000/fetch/batch"
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
       - name: url-fetcher
         image: {{ .Values.url_fetcher.image }}
         imagePullPolicy: Always  # For local development

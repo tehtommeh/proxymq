@@ -6,3 +6,5 @@ rabbitmq:
   image: rabbitmq:4-management
 nginx:
   image: nginx:latest
+url_fetcher:
+  image: url-fetcher:latest

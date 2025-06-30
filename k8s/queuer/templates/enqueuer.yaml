@@ -18,7 +18,7 @@ spec:
       containers:
       - name: enqueuer
         image: {{ .Values.enqueuer.image }}
-        imagePullPolicy: Never  # For local development
+        imagePullPolicy: Always  # For local development
         ports:
         - containerPort: 8000
           name: http
