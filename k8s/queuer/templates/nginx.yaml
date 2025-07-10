@@ -1,19 +1,19 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: dequeuer-url-fetcher
+  name: nginx
   namespace: proxymq
   labels:
-    app: dequeuer-url-fetcher
+    app: nginx
 spec:
-  replicas: 2
+  replicas: 3
   selector:
     matchLabels:
-      app: dequeuer-url-fetcher
+      app: nginx
   template:
     metadata:
       labels:
-        app: dequeuer-url-fetcher
+        app: nginx
     spec:
       initContainers:
         - name: dequeuer
@@ -27,13 +27,9 @@ spec:
           - name: DEQUEUER_POOL_SIZE
             value: "100"
           - name: SERVICE_NAME
-            value: "url_fetcher"
-          - name: BATCH_MODE
-            value: "true"
+            value: "nginx"
           - name: DOWNSTREAM_URL
-            value: "http://localhost:8000/fetch"
-          - name: BATCH_DOWNSTREAM_URL
-            value: "http://localhost:8000/fetch/batch"
+            value: "http://localhost:80/"
           resources:
             requests:
               memory: "128Mi"
@@ -43,19 +39,12 @@ spec:
               cpu: "200m"
           restartPolicy: Always
       containers:
-      - name: url-fetcher
-        image: {{ .Values.url_fetcher.image }}
-        imagePullPolicy: Always  # For local development
-        ports:
-        - containerPort: 8000
-          name: http
-        env:
-        - name: BATCH_SIZE
-          value: "100"
+      - name: nginx
+        image: {{ .Values.nginx.image }}
         resources:
           requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
             memory: "128Mi"
             cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"

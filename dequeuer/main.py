@@ -88,11 +88,23 @@ async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.Incom
         return
     
     logger.info(f"Processing batch of {len(messages)} messages")
-    batch_request = {
-        "requests": [
-            json.loads(msg.body.decode()) for msg in messages
-        ]
-    }
+    batch_requests = []
+    
+    for msg in messages:
+        headers = getattr(msg, 'headers', {}) or {}
+        request_method = headers.get('x-http-method', 'POST')
+        correlation_id = getattr(msg, 'correlation_id', None)
+        
+        # Build request structure with method, headers, and body
+        request_data = {
+            "method": request_method,
+            "headers": {k: v for k, v in headers.items() if k not in ['content-length', 'host', 'x-http-method']},
+            "body": msg.body.decode() if msg.body else "",
+            "correlation_id": correlation_id
+        }
+        batch_requests.append(request_data)
+    
+    batch_request = {"requests": batch_requests}
     
     service = settings.SERVICE_NAME
     start = time.time()
@@ -110,17 +122,24 @@ async def process_batch(client: httpx.AsyncClient, messages: List[aio_pika.Incom
             correlation_id = getattr(msg, 'correlation_id', None)
             response_headers = result.get("headers", {}) if result.get("status") == "success" else {}
             
-            # Handle binary content properly
+            # Add status code to response headers
             if result.get("status") == "success":
-                # For successful responses, content is base64 encoded in the JSON
-                response_content = result.get("content", b"")
+                response_headers["x-status-code"] = str(result.get("status_code", 200))
+            else:
+                response_headers["x-status-code"] = str(result.get("status_code", 500))
+            
+            # Handle content properly
+            if result.get("status") == "success":
+                # For successful responses, content should be handled as text/bytes
+                response_content = result.get("content", "")
                 if isinstance(response_content, str):
-                    response_content = response_content.encode()
+                    response_content = response_content.encode('utf-8')
                 status_code = result.get("status_code", 200)
             else:
                 # For error responses, encode the error message
-                response_content = json.dumps(result).encode()
+                response_content = json.dumps(result).encode('utf-8')
                 status_code = result.get("status_code", 500)
+                response_headers["content-type"] = "application/json"
             
             await channel.default_exchange.publish(
                 aio_pika.Message(
