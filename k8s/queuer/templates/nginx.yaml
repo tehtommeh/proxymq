@@ -30,6 +30,12 @@ spec:
             value: "nginx"
           - name: DOWNSTREAM_URL
             value: "http://localhost:80/"
+          - name: HEALTH_CHECK_URL
+            value: "http://localhost:80/"
+          - name: HEALTH_CHECK_INTERVAL
+            value: "5"
+          - name: HEALTH_CHECK_TIMEOUT
+            value: "10"
           resources:
             requests:
               memory: "128Mi"

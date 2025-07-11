@@ -7,8 +7,9 @@ from settings import settings
 import logging
 from typing import List, Dict, Any
 import json
-from prometheus_client import Counter, Histogram, start_http_server
+from prometheus_client import Counter, Histogram, Gauge, start_http_server
 import time
+import random
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -22,6 +23,12 @@ MAX_BATCH_SIZE = None
 PROCESSED_TOTAL = Counter("dequeuer_processed_total", "Total messages processed", ["service", "status_code", "batch_size"])
 FAILED_TOTAL = Counter("dequeuer_failed_total", "Total failed messages", ["service", "status_code", "batch_size"])
 PROCESSING_LATENCY = Histogram("dequeuer_processing_latency_seconds", "Message processing latency", ["service", "status_code", "batch_size"])
+
+# Health check metrics
+HEALTH_CHECK_ATTEMPTS = Counter("dequeuer_health_check_attempts_total", "Total health check attempts", ["service"])
+HEALTH_CHECK_SUCCESS = Counter("dequeuer_health_check_success_total", "Total successful health checks", ["service"])
+HEALTH_CHECK_DURATION = Histogram("dequeuer_health_check_duration_seconds", "Health check latency", ["service", "status_code"])
+READY_TIME = Gauge("dequeuer_ready_time_seconds", "Unix timestamp when dequeuer became ready", ["service"])
 
 # Start Prometheus metrics server on port 8001
 start_http_server(8001)
@@ -37,6 +44,54 @@ async def get_batch_size() -> int:
         except Exception as e:
             logger.error(f"Failed to get batch size from downstream service: {e}")
             return 1
+
+async def wait_for_downstream_health() -> None:
+    """Wait for downstream service to be healthy before processing messages."""
+    if not settings.HEALTH_CHECK_URL:
+        logger.info("No health check URL configured, skipping health check")
+        return
+    
+    logger.info(f"Starting health check for downstream service at {settings.HEALTH_CHECK_URL}")
+    service = settings.SERVICE_NAME
+    attempt = 0
+    
+    while True:
+        attempt += 1
+        HEALTH_CHECK_ATTEMPTS.labels(service=service).inc()
+        
+        start_time = time.time()
+        try:
+            async with httpx.AsyncClient(timeout=settings.HEALTH_CHECK_TIMEOUT) as client:
+                response = await client.get(settings.HEALTH_CHECK_URL)
+                duration = time.time() - start_time
+                
+                HEALTH_CHECK_DURATION.labels(service=service, status_code=str(response.status_code)).observe(duration)
+                
+                if response.status_code == 200:
+                    logger.info(f"Health check passed for {settings.HEALTH_CHECK_URL} after {attempt} attempts")
+                    HEALTH_CHECK_SUCCESS.labels(service=service).inc()
+                    READY_TIME.labels(service=service).set(time.time())
+                    return
+                else:
+                    logger.warning(f"Health check failed with status {response.status_code}: {settings.HEALTH_CHECK_URL}")
+                    
+        except Exception as e:
+            duration = time.time() - start_time
+            HEALTH_CHECK_DURATION.labels(service=service, status_code="error").observe(duration)
+            logger.warning(f"Health check failed with error: {e}")
+        
+        # Check if we should stop retrying
+        if settings.HEALTH_CHECK_MAX_RETRIES > 0 and attempt >= settings.HEALTH_CHECK_MAX_RETRIES:
+            logger.error(f"Health check failed after {attempt} attempts, giving up")
+            raise Exception(f"Downstream service health check failed after {attempt} attempts")
+        
+        # Calculate backoff with jitter (exponential backoff with max 60 seconds)
+        backoff_base = min(settings.HEALTH_CHECK_INTERVAL * (2 ** min(attempt - 1, 6)), 60)
+        jitter = random.uniform(0.1, 0.5)  # 10-50% jitter
+        sleep_time = backoff_base * (1 + jitter)
+        
+        logger.info(f"Health check attempt {attempt} failed, retrying in {sleep_time:.1f} seconds")
+        await asyncio.sleep(sleep_time)
 
 async def process_single_message(client: httpx.AsyncClient, message: aio_pika.IncomingMessage, channel: aio_pika.Channel):
     """Process a single message."""
@@ -298,6 +353,9 @@ if __name__ == "__main__":
         logger.info("Dequeuer service starting...")
         await startup()
         try:
+            # Wait for downstream service to be healthy before processing messages
+            await wait_for_downstream_health()
+            logger.info("Dequeuer is ready to process messages")
             await process_queue()
         finally:
             await shutdown()
