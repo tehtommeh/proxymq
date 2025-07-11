@@ -36,6 +36,18 @@ spec:
             value: "5"
           - name: HEALTH_CHECK_TIMEOUT
             value: "10"
+          ports:
+          - containerPort: 8001
+            name: metrics
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8001
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+            timeoutSeconds: 3
           resources:
             requests:
               memory: "128Mi"
@@ -47,6 +59,25 @@ spec:
       containers:
       - name: nginx
         image: {{ .Values.nginx.image }}
+        ports:
+        - containerPort: 80
+          name: http
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
         resources:
           requests:
             memory: "64Mi"
