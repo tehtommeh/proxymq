@@ -87,6 +87,29 @@ services:
     ports:
       - "80:80"
 
+  test-service:
+    build:
+      context: ./test-service
+    container_name: test-service
+    ports:
+      - "8002:8000"
+
+  dequeuer_test:
+    build:
+      context: ./dequeuer
+    container_name: dequeuer_test
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      DEQUEUER_POOL_SIZE: 100
+      SERVICE_NAME: test
+      DOWNSTREAM_URL: http://test-service:8000/error500
+    depends_on:
+      - rabbitmq
+      - test-service
+    ports:
+      - "8014:8001"
+
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus

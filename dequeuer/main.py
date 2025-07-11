@@ -60,9 +60,12 @@ async def process_single_message(client: httpx.AsyncClient, message: aio_pika.In
             follow_redirects=True
         )
         status_code = resp.status_code
-        response_headers = dict(resp.headers)
+        response_headers = {k: str(v) for k, v in resp.headers.items()}
         response_headers.pop('content-length', None)
         response_headers.pop('transfer-encoding', None)
+        
+        # Add the HTTP status code to the headers for the enqueuer
+        response_headers['x-status-code'] = str(status_code)
         
         await channel.default_exchange.publish(
             aio_pika.Message(
@@ -74,11 +77,25 @@ async def process_single_message(client: httpx.AsyncClient, message: aio_pika.In
             routing_key=message.reply_to
         )
         PROCESSED_TOTAL.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).inc()
-        logger.info(f"Response published for correlation_id={correlation_id}")
+        logger.info(f"Response published for correlation_id={correlation_id} with status_code={status_code} to reply_to={message.reply_to}")
     except Exception as e:
         FAILED_TOTAL.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).inc()
         logger.error(f"Error processing single message: {e}")
-        raise
+        # Send error response back to the reply queue
+        error_response = {"status": "error", "detail": str(e)}
+        await channel.default_exchange.publish(
+            aio_pika.Message(
+                body=json.dumps(error_response).encode(),
+                correlation_id=correlation_id,
+                content_type="application/json",
+                headers={
+                    "x-status-code": "500",
+                    "content-type": "application/json"
+                }
+            ),
+            routing_key=message.reply_to
+        )
+        logger.info(f"Error response published for correlation_id={correlation_id}")
     finally:
         PROCESSING_LATENCY.labels(service=service, status_code=str(status_code), batch_size=str(batch_size)).observe(time.time() - start)
 

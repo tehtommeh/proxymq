@@ -86,12 +86,19 @@ async def proxy(service: str, request: Request):
                     response_future.set_result(message)
             
             consumer_tag = await reply_q.consume(on_message)
+            logger.info(f"Waiting for response on reply queue '{reply_queue}' with timeout {settings.ENQUEUER_REPLY_TIMEOUT}s (consume mode)")
             try:
                 incoming_message = await asyncio.wait_for(response_future, timeout=settings.ENQUEUER_REPLY_TIMEOUT)
                 logger.info(f"Received message from reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
                 response_body = incoming_message.body
                 response_headers = incoming_message.headers or {}
-                status_code = response_headers.pop('x-status-code', 200)
+                # Properly handle the status code from the dequeuer response
+                status_code_str = response_headers.pop('x-status-code', '200')
+                try:
+                    status_code = int(status_code_str)
+                except (ValueError, TypeError):
+                    logger.warning(f"Invalid status code '{status_code_str}' received, defaulting to 200")
+                    status_code = 200
                 await incoming_message.ack()
                 logger.info(f"Acknowledged message from reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
             finally:
@@ -100,7 +107,7 @@ async def proxy(service: str, request: Request):
                 await reply_q.delete()
                 logger.info(f"Deleted reply queue '{reply_queue}' for correlation_id '{correlation_id}' (consume mode)")
             RESPONSE_CODES.labels(service=service, status_code=str(status_code)).inc()
-            return Response(content=response_body, headers=response_headers, status_code=status_code)
+            return Response(content=response_body, headers=response_headers, status_code=int(status_code))
     except Exception as e:
         REQUESTS_FAILED.labels(service=service).inc()
         RESPONSE_CODES.labels(service=service, status_code=str(status_code)).inc()
