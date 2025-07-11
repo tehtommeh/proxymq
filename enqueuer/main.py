@@ -23,6 +23,8 @@ REQUESTS_PUBLISHED = Counter("enqueuer_requests_published_total", "Total request
 REQUESTS_FAILED = Counter("enqueuer_requests_failed_total", "Total failed requests", ["service"])
 REQUEST_LATENCY = Histogram("enqueuer_request_latency_seconds", "Request processing latency", ["service"])
 RESPONSE_CODES = Counter("enqueuer_response_codes_total", "HTTP response codes returned", ["service", "status_code"])
+NO_CONSUMERS = Counter("enqueuer_no_consumers_total", "Total requests rejected due to no consumers", ["service"])
+QUEUE_NOT_FOUND = Counter("enqueuer_queue_not_found_total", "Total requests rejected due to queue not found", ["service"])
 
 @app.on_event("startup")
 async def startup_event():
@@ -67,6 +69,32 @@ async def proxy(service: str, request: Request):
         async with RABBIT_POOL.acquire() as connection:
             channel = await connection.channel()
             logger.info(f"Channel acquired for service '{service}', declaring reply queue '{reply_queue}'")
+            
+            # Check if there are any consumers for the service queue
+            try:
+                service_queue_info = await channel.declare_queue(service_queue, passive=True)
+                consumer_count = service_queue_info.declaration_result.consumer_count
+                logger.info(f"Service queue '{service_queue}' has {consumer_count} consumers")
+                
+                if consumer_count == 0:
+                    logger.warning(f"No consumers found for service queue '{service_queue}'")
+                    NO_CONSUMERS.labels(service=service).inc()
+                    RESPONSE_CODES.labels(service=service, status_code="503").inc()
+                    return Response(
+                        content=b'{"error": "Service unavailable", "detail": "No consumers available for this service"}',
+                        status_code=503,
+                        headers={"content-type": "application/json"}
+                    )
+            except Exception as e:
+                logger.warning(f"Service queue '{service_queue}' does not exist or is inaccessible: {e}")
+                QUEUE_NOT_FOUND.labels(service=service).inc()
+                RESPONSE_CODES.labels(service=service, status_code="404").inc()
+                return Response(
+                    content=b'{"error": "Service not found", "detail": "Service queue does not exist"}',
+                    status_code=404,
+                    headers={"content-type": "application/json"}
+                )
+            
             reply_q = await channel.declare_queue(reply_queue, exclusive=True, auto_delete=True)
             await channel.default_exchange.publish(
                 aio_pika.Message(
