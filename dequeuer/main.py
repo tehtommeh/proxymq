@@ -21,6 +21,7 @@ class HealthCheckFailedException(Exception):
 
 class MetricsManager:
     def __init__(self, metrics_port: int):
+        # Initialize all Prometheus metrics with consistent labeling for service identification
         self.processed_total = Counter("dequeuer_processed_total", "Total messages processed", ["service", "status_code", "batch_size"])
         self.failed_total = Counter("dequeuer_failed_total", "Total failed messages", ["service", "status_code", "batch_size"])
         self.processing_latency = Histogram("dequeuer_processing_latency_seconds", "Message processing latency", ["service", "status_code", "batch_size"])
@@ -30,6 +31,7 @@ class MetricsManager:
         self.health_check_duration = Histogram("dequeuer_health_check_duration_seconds", "Health check latency", ["service", "status_code"])
         self.ready_time = Gauge("dequeuer_ready_time_seconds", "Unix timestamp when dequeuer became ready", ["service"])
         
+        # Start the HTTP server for Prometheus to scrape metrics - this binds to the port
         start_http_server(metrics_port)
         logger.info(f"Prometheus metrics server started on port {metrics_port}")
 
@@ -72,6 +74,7 @@ class HealthChecker:
 
     async def check_downstream_health(self) -> bool:
         """Check if downstream service is healthy. Returns True if healthy, False otherwise."""
+        # Skip health checks if no URL is configured - assume healthy to allow processing
         if not settings.HEALTH_CHECK_URL:
             return True
         
@@ -144,9 +147,11 @@ class MessageProcessor:
         correlation_id = getattr(message, 'correlation_id', None)
         logger.info(f"Processing single message with correlation_id={correlation_id}")
         headers = getattr(message, 'headers', {}) or {}
+        # Remove headers that would interfere with the downstream request
         headers.pop('content-length', None)
         headers.pop('host', None)
         
+        # Extract HTTP method from custom header (enqueuer sets this)
         request_method = headers.pop('x-http-method', 'POST')
         service = settings.SERVICE_NAME
         start = time.time()
@@ -163,9 +168,11 @@ class MessageProcessor:
             )
             status_code = resp.status_code
             response_headers = {k: str(v) for k, v in resp.headers.items()}
+            # Remove headers that could cause issues when forwarding the response
             response_headers.pop('content-length', None)
             response_headers.pop('transfer-encoding', None)
             
+            # Add status code to headers so enqueuer can set proper HTTP response status
             response_headers['x-status-code'] = str(status_code)
             
             await channel.default_exchange.publish(
@@ -214,6 +221,7 @@ class DequeuerService:
         
         try:
             channel = await connection.channel()
+            # Ensure only one message is processed at a time to prevent overwhelming downstream
             await channel.set_qos(prefetch_count=1)
             
             queue_name = f"{settings.SERVICE_NAME}_requests"
@@ -227,13 +235,19 @@ class DequeuerService:
                     correlation_id = getattr(message, 'correlation_id', 'unknown')
                     logger.info(f"Retrieved message with correlation_id={correlation_id}")
                     
+                    # Check health before processing each message to avoid sending to unhealthy downstream
                     is_healthy = await self.health_checker.check_downstream_health()
                     if not is_healthy:
                         logger.warning(f"Downstream unhealthy, nacking message {correlation_id}")
                         
+                        # Put the message back in the queue for later processing
                         await message.nack(requeue=True, multiple=False)
                         logger.info(f"Message {correlation_id} nacked and requeued")
                         
+                        # Stop consuming messages and let the main loop handle recovery
+                        # It is necessary to cancel the consumer tag from the queue because a nack-ed message will not be sent back
+                        # to the same consumer. If we didn't do cleanup like this, then on downstream service recovery, this dequeuer
+                        # would never attempt to reconsume the message.
                         try:
                             await queue.cancel(consumer_tag)
                             logger.info(f"Consumer {consumer_tag} cancelled")
@@ -257,6 +271,7 @@ class DequeuerService:
         finally:
             if channel and not channel.is_closed:
                 try:
+                    # Clean up consumer if it's still active (defensive cleanup)
                     if consumer_tag and hasattr(channel, '_consumers') and consumer_tag in getattr(channel, '_consumers', {}):
                         try:
                             queue_name = f"{settings.SERVICE_NAME}_requests"
@@ -271,20 +286,24 @@ class DequeuerService:
                     logger.warning(f"Error closing channel: {e}")
 
     async def process_queue(self):
-        """Main processing loop."""
+        """Main processing loop that handles recovery from health check failures."""
         while True:
             try:
+                # Block until downstream is healthy before attempting to process messages
                 await self.health_checker.wait_until_healthy()
                 
                 logger.info("Getting connection from pool...")
                 async with self.rabbit_pool.acquire() as connection:
                     logger.info("Connection acquired, starting consumption session")
+                    # This will run indefinitely until health check fails or other error
                     await self.consume_messages(connection)
                     
             except HealthCheckFailedException:
+                # Expected exception when downstream becomes unhealthy - just restart the loop
                 logger.info("Downstream became unhealthy during processing, will wait for recovery")
                 await asyncio.sleep(0.5)
             except Exception as e:
+                # Unexpected errors need longer backoff to avoid tight error loops
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 await asyncio.sleep(2)
 
