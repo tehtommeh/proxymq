@@ -15,7 +15,7 @@ logger = logging.getLogger("dequeuer")
 
 
 class MetricsManager:
-    def __init__(self):
+    def __init__(self, metrics_port: int):
         self.processed_total = Counter("dequeuer_processed_total", "Total messages processed", ["service", "status_code", "batch_size"])
         self.failed_total = Counter("dequeuer_failed_total", "Total failed messages", ["service", "status_code", "batch_size"])
         self.processing_latency = Histogram("dequeuer_processing_latency_seconds", "Message processing latency", ["service", "status_code", "batch_size"])
@@ -25,8 +25,8 @@ class MetricsManager:
         self.health_check_duration = Histogram("dequeuer_health_check_duration_seconds", "Health check latency", ["service", "status_code"])
         self.ready_time = Gauge("dequeuer_ready_time_seconds", "Unix timestamp when dequeuer became ready", ["service"])
         
-        start_http_server(8001)
-        logger.info("Prometheus metrics server started on port 8001")
+        start_http_server(metrics_port)
+        logger.info(f"Prometheus metrics server started on port {metrics_port}")
 
     def record_processed(self, service: str, status_code: str, batch_size: str = "1"):
         self.processed_total.labels(service=service, status_code=status_code, batch_size=batch_size).inc()
@@ -196,8 +196,8 @@ class MessageProcessor:
             self.metrics.record_processing_latency(service, str(status_code), time.time() - start, batch_size)
 
 class DequeuerService:
-    def __init__(self):
-        self.metrics = MetricsManager()
+    def __init__(self, metrics_manager: MetricsManager):
+        self.metrics = metrics_manager
         self.health_checker = HealthChecker(self.metrics)
         self.message_processor = MessageProcessor(self.metrics)
         self.rabbit_pool: Optional[Pool] = None
@@ -323,7 +323,8 @@ class DequeuerService:
 
 if __name__ == "__main__":
     async def main():
-        service = DequeuerService()
+        metrics_manager = MetricsManager(metrics_port=8001)
+        service = DequeuerService(metrics_manager)
         await service.run()
     
     asyncio.run(main())
