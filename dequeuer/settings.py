@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     RABBITMQ_PORT: int = 5672
     DOWNSTREAM_URL: str = "http://url-fetcher:8000/fetch"
     DEQUEUER_POOL_SIZE: int = 10
+    DOWNSTREAM_TIMEOUT: int = 60  # HTTP timeout for downstream requests
     
     # Batch mode settings
     BATCH_MODE: bool = False

@@ -2,7 +2,6 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: url-fetcher
-  namespace: proxymq
   labels:
     app: url-fetcher
 spec:

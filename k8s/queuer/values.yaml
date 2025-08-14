@@ -1,10 +1,14 @@
 enqueuer:
-  image: enqueuer:latest
+  image: 192.168.2.1:5000/enqueuer:latest
 dequeuer:
-  image: dequeuer:latest
+  image: 192.168.2.1:5000/dequeuer:latest
 rabbitmq:
   image: rabbitmq:4-management
 nginx:
   image: nginx:latest
 url_fetcher:
-  image: url-fetcher:latest
+  image: 192.168.2.1:5000/url-fetcher:latest
+test_service:
+  image: 192.168.2.1:5000/test-service:latest
+  startup_delay_seconds: "20"
+  request_processing_seconds: "5"
