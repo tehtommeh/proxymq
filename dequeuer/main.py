@@ -14,6 +14,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("dequeuer")
 
 
+class HealthCheckFailedException(Exception):
+    """Raised when downstream health check fails during message processing."""
+    pass
+
+
 class MetricsManager:
     def __init__(self, metrics_port: int):
         self.processed_total = Counter("dequeuer_processed_total", "Total messages processed", ["service", "status_code", "batch_size"])
@@ -202,8 +207,8 @@ class DequeuerService:
         self.message_processor = MessageProcessor(self.metrics)
         self.rabbit_pool: Optional[Pool] = None
 
-    async def consume_messages_with_health_check(self, connection: aio_pika.Connection):
-        """Consume messages with health checking. Returns True if should restart, False if error."""
+    async def consume_messages(self, connection: aio_pika.Connection):
+        """Consume messages from the queue. Raises HealthCheckFailedException if downstream becomes unhealthy."""
         channel: Optional[aio_pika.Channel] = None
         consumer_tag: Optional[str] = None
         
@@ -235,19 +240,19 @@ class DequeuerService:
                         except Exception as e:
                             logger.warning(f"Error cancelling consumer: {e}")
                         
-                        return True
+                        raise HealthCheckFailedException("Downstream service became unhealthy during message processing")
                     
                     logger.info(f"Processing message with correlation_id={correlation_id}")
                     async with message.process():
                         await self.message_processor.process_single_message(client, message, channel)
                     
                     logger.info(f"Completed processing message {correlation_id}")
-            
-            return False
-            
+                    
+        except HealthCheckFailedException:
+            raise
         except Exception as e:
             logger.error(f"Error in consume session: {e}", exc_info=True)
-            return False
+            raise
             
         finally:
             if channel and not channel.is_closed:
@@ -274,16 +279,11 @@ class DequeuerService:
                 logger.info("Getting connection from pool...")
                 async with self.rabbit_pool.acquire() as connection:
                     logger.info("Connection acquired, starting consumption session")
+                    await self.consume_messages(connection)
                     
-                    should_restart = await self.consume_messages_with_health_check(connection)
-                    
-                    if should_restart:
-                        logger.info("Consumption session ended due to health check failure, will restart after health recovery")
-                        await asyncio.sleep(0.5)
-                    else:
-                        logger.warning("Consumption session ended unexpectedly, restarting...")
-                        await asyncio.sleep(2)
-                        
+            except HealthCheckFailedException:
+                logger.info("Downstream became unhealthy during processing, will wait for recovery")
+                await asyncio.sleep(0.5)
             except Exception as e:
                 logger.error(f"Error in main loop: {e}", exc_info=True)
                 await asyncio.sleep(2)
