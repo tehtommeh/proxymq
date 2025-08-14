@@ -10,5 +10,5 @@ url_fetcher:
   image: 192.168.2.1:5000/url-fetcher:latest
 test_service:
   image: 192.168.2.1:5000/test-service:latest
-  startup_delay_seconds: "20"
-  request_processing_seconds: "5"
+  startup_delay_seconds: "2"
+  request_processing_seconds: "2"

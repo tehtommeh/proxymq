@@ -34,7 +34,7 @@ spec:
           - name: BATCH_DOWNSTREAM_URL
             value: "http://localhost:8000/fetch/batch"
           - name: HEALTH_CHECK_URL
-            value: "http://localhost:8000/"
+            value: "http://localhost:8000/health"
           - name: HEALTH_CHECK_INTERVAL
             value: "5"
           - name: HEALTH_CHECK_TIMEOUT
@@ -71,7 +71,7 @@ spec:
           value: "100"
         livenessProbe:
           httpGet:
-            path: /
+            path: /health
             port: 8000
           initialDelaySeconds: 30
           periodSeconds: 10
@@ -79,7 +79,7 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /
+            path: /health
             port: 8000
           initialDelaySeconds: 5
           periodSeconds: 5

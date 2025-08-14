@@ -2,25 +2,15 @@ from fastapi import FastAPI, Request, HTTPException
 from pydantic import BaseModel, HttpUrl
 import httpx
 from typing import List
-import os
 from fastapi.responses import Response
 import asyncio
 import logging
-import traceback
 from settings import settings
 
 app = FastAPI()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("enqueuer")
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting up enqueuer and initializing RabbitMQ pool...")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info("Shutting down enqueuer and closing RabbitMQ pool...")
 
 class FetchRequest(BaseModel):
     url: HttpUrl
@@ -40,6 +30,7 @@ class BatchResponse(BaseModel):
 @app.post("/fetch")
 async def fetch_url(request: FetchRequest):
     """Fetch a single URL and return its response."""
+    logger.info(f"Received single fetch request for URL: {request.url}")
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(str(request.url))
@@ -60,10 +51,12 @@ async def fetch_url(request: FetchRequest):
 async def fetch_batch(batch_request: BatchFetchRequest):
     """Process multiple HTTP requests in batch with different methods."""
     requests = batch_request.requests
+    logger.info(f"Received batch request with {len(requests)} requests")
 
     async with httpx.AsyncClient() as client:
         tasks = []
-        for request in requests:
+        for i, request in enumerate(requests):
+            logger.info(f"Processing request {i+1}/{len(requests)}: method={request.method}, correlation_id={request.correlation_id}")
             try:
                 # Extract URL from the request body (for URL fetcher service)
                 # For GET requests, URL is typically in the body as text
@@ -119,6 +112,8 @@ async def fetch_batch(batch_request: BatchFetchRequest):
                         "content": response.content.decode('utf-8', errors='replace'),
                         "correlation_id": request.correlation_id
                     })
+            
+            logger.info(f"Batch processing completed. Returning {len(results)} results")
             return results
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
@@ -127,3 +122,8 @@ async def fetch_batch(batch_request: BatchFetchRequest):
 async def get_batch_size() -> BatchResponse:
     """Return the maximum allowed batch size."""
     return BatchResponse(batch_size=settings.BATCH_SIZE)
+
+@app.get("/health")
+async def health():
+    """Health check endpoint for dequeuer health monitoring."""
+    return {"status": "healthy", "message": "URL-fetcher service is ready"}
