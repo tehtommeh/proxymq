@@ -15,6 +15,7 @@ app = FastAPI()
 RABBIT_POOL = None
 REPLY_CONNECTION = None  # Dedicated connection for Direct Reply-To
 REPLY_CHANNEL = None
+MANAGEMENT_CHANNEL = None  # Persistent channel for consumer count checks
 REPLY_FUTURES = {}  # correlation_id -> asyncio.Future mapping
 
 logging.basicConfig(level=logging.INFO)
@@ -94,6 +95,15 @@ async def cleanup_abandoned_futures():
             logger.error(f"Error in cleanup_abandoned_futures: {e}")
             await asyncio.sleep(60)
 
+async def setup_management_channel():
+    """Set up a persistent channel for management operations like consumer count checks"""
+    global MANAGEMENT_CHANNEL
+    
+    # Use the reply connection for management operations to minimize connections
+    MANAGEMENT_CHANNEL = await REPLY_CONNECTION.channel()
+    await MANAGEMENT_CHANNEL.set_qos(prefetch_count=1)
+    logger.info("Management channel established for consumer count checks")
+
 @app.on_event("startup")
 async def startup_event():
     global RABBIT_POOL
@@ -113,12 +123,15 @@ async def startup_event():
     await setup_direct_reply_consumer()
     logger.info("Direct Reply-To consumer setup completed")
 
+    # Set up management channel for consumer count checks
+    await setup_management_channel()
+
     # Start background task to clean up abandoned futures
     asyncio.create_task(cleanup_abandoned_futures())
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global RABBIT_POOL, REPLY_CONNECTION, REPLY_CHANNEL, REPLY_FUTURES
+    global RABBIT_POOL, REPLY_CONNECTION, REPLY_CHANNEL, MANAGEMENT_CHANNEL, REPLY_FUTURES
     logger.info("Shutting down enqueuer and closing RabbitMQ pool...")
 
     # Cancel any pending reply futures
@@ -127,6 +140,11 @@ async def shutdown_event():
             future.cancel()
             logger.info(f"Cancelled pending future for correlation_id '{correlation_id}'")
     REPLY_FUTURES.clear()
+
+    # Close management channel
+    if MANAGEMENT_CHANNEL is not None:
+        await MANAGEMENT_CHANNEL.close()
+        logger.info("Management channel closed.")
 
     # Close reply channel and connection
     if REPLY_CHANNEL is not None:
@@ -161,32 +179,30 @@ async def proxy(service: str, request: Request):
         # Use the dedicated Direct Reply-To channel for publishing (CRITICAL requirement)
         logger.info(f"Using Direct Reply-To channel for service '{service}' request")
 
-        # Check if there are any consumers for the service queue using a temporary channel
-        async with RABBIT_POOL.acquire() as temp_connection:
-            temp_channel = await temp_connection.channel()
-            try:
-                service_queue_info = await temp_channel.declare_queue(service_queue, passive=True)
-                consumer_count = service_queue_info.declaration_result.consumer_count
-                logger.info(f"Service queue '{service_queue}' has {consumer_count} consumers")
+        # Check if there are any consumers for the service queue using persistent management channel
+        try:
+            service_queue_info = await MANAGEMENT_CHANNEL.declare_queue(service_queue, passive=True)
+            consumer_count = service_queue_info.declaration_result.consumer_count
+            logger.info(f"Service queue '{service_queue}' has {consumer_count} consumers")
 
-                if consumer_count == 0:
-                    logger.warning(f"No consumers found for service queue '{service_queue}'")
-                    NO_CONSUMERS.labels(service=service).inc()
-                    RESPONSE_CODES.labels(service=service, status_code="503").inc()
-                    return Response(
-                        content=b'{"error": "Service unavailable", "detail": "No consumers available for this service"}',
-                        status_code=503,
-                        headers={"content-type": "application/json"}
-                    )
-            except Exception as e:
-                logger.warning(f"Service queue '{service_queue}' does not exist or is inaccessible: {e}")
-                QUEUE_NOT_FOUND.labels(service=service).inc()
-                RESPONSE_CODES.labels(service=service, status_code="404").inc()
+            if consumer_count == 0:
+                logger.warning(f"No consumers found for service queue '{service_queue}'")
+                NO_CONSUMERS.labels(service=service).inc()
+                RESPONSE_CODES.labels(service=service, status_code="503").inc()
                 return Response(
-                    content=b'{"error": "Service not found", "detail": "Service queue does not exist"}',
-                    status_code=404,
+                    content=b'{"error": "Service unavailable", "detail": "No consumers available for this service"}',
+                    status_code=503,
                     headers={"content-type": "application/json"}
                 )
+        except Exception as e:
+            logger.warning(f"Service queue '{service_queue}' does not exist or is inaccessible: {e}")
+            QUEUE_NOT_FOUND.labels(service=service).inc()
+            RESPONSE_CODES.labels(service=service, status_code="404").inc()
+            return Response(
+                content=b'{"error": "Service not found", "detail": "Service queue does not exist"}',
+                status_code=404,
+                headers={"content-type": "application/json"}
+            )
 
         # Create future for this request and register it
         response_future = asyncio.get_event_loop().create_future()
