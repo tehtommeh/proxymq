@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import traceback
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from prometheus_client import Counter, Histogram
 from models import EnqueueResult, ProxyResult
 from settings import settings
@@ -103,8 +103,6 @@ class Enqueuer:
         service_queue = f"{service}_requests"
 
         try:
-            if self.management_channel is None:
-                raise RuntimeError("Management channel not established")
             service_queue_info = await self.management_channel.declare_queue(service_queue, passive=True)
             consumer_count = service_queue_info.declaration_result.consumer_count
             logger.info(f"Service queue '{service_queue}' has {consumer_count} consumers")
@@ -141,8 +139,6 @@ class Enqueuer:
             headers["x-http-method"] = method
             
             # Publish message using Direct Reply-To pattern
-            if self.reply_channel is None:
-                raise RuntimeError("Reply channel not established")
             await self.reply_channel.default_exchange.publish(
                 aio_pika.Message(
                     body=body,
@@ -221,23 +217,19 @@ class Enqueuer:
         self.future_timestamps.clear()
 
         # Close management channel
-        if self.management_channel is not None:
-            await self.management_channel.close()
-            logger.info("Management channel closed.")
+        await self.management_channel.close()
+        logger.info("Management channel closed.")
 
         # Close reply channel and connection
-        if self.reply_channel is not None:
-            await self.reply_channel.close()
-            logger.info("Reply channel closed.")
+        await self.reply_channel.close()
+        logger.info("Reply channel closed.")
 
-        if self.reply_connection is not None:
-            await self.reply_connection.close()
-            logger.info("Reply connection closed.")
+        await self.reply_connection.close()
+        logger.info("Reply connection closed.")
 
         # Close pool
-        if self.rabbit_pool is not None:
-            await self.rabbit_pool.close()
-            logger.info("RabbitMQ pool closed.")
+        await self.rabbit_pool.close()
+        logger.info("RabbitMQ pool closed.")
 
 
 async def create_enqueuer() -> Enqueuer:
