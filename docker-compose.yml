@@ -11,6 +11,13 @@ services:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
 
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+
   enqueuer:
     build:
       context: ./enqueuer
@@ -23,6 +30,25 @@ services:
       - rabbitmq
     ports:
       - "8000:8000"
+
+  enqueuer-async:
+    build:
+      context: ./enqueuer
+      dockerfile: Dockerfile.async
+    container_name: enqueuer-async
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      ENQUEUER_POOL_SIZE: 100
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ASYNC_JOB_TTL: 3600
+      ASYNC_REQUIRE_AUTH: ${ASYNC_REQUIRE_AUTH:-false}
+    depends_on:
+      - rabbitmq
+      - redis
+    ports:
+      - "8100:8000"
 
   dequeuer_nginx:
     build:
@@ -87,10 +113,34 @@ services:
     ports:
       - "80:80"
 
+  httpbin:
+    image: kennethreitz/httpbin
+    container_name: httpbin
+    ports:
+      - "8090:80"
+
+  dequeuer_httpbin:
+    build:
+      context: ./dequeuer
+    container_name: dequeuer_httpbin
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      DEQUEUER_POOL_SIZE: 100
+      SERVICE_NAME: httpbin
+      DOWNSTREAM_URL: http://httpbin:80/post
+    depends_on:
+      - rabbitmq
+      - httpbin
+    ports:
+      - "8015:8001"
+
   test-service:
     build:
       context: ./test-service
     container_name: test-service
+    environment:
+      REQUEST_PROCESSING_SECONDS: 3.0  # 3 second processing delay for testing
     ports:
       - "8002:8000"
 
@@ -103,7 +153,7 @@ services:
       RABBITMQ_PORT: 5672
       DEQUEUER_POOL_SIZE: 100
       SERVICE_NAME: test
-      DOWNSTREAM_URL: http://test-service:8000/error500
+      DOWNSTREAM_URL: http://test-service:8000/success
     depends_on:
       - rabbitmq
       - test-service
@@ -119,8 +169,10 @@ services:
       - "9090:9090"
     depends_on:
       - enqueuer
+      - enqueuer-async
       - dequeuer_nginx
       - dequeuer_google
+      - dequeuer_httpbin
       - dequeuer_url_fetcher
 
   grafana:

@@ -7,6 +7,10 @@ scrape_configs:
     static_configs:
       - targets: ['enqueuer:8000']
 
+  - job_name: 'enqueuer-async'
+    static_configs:
+      - targets: ['enqueuer-async:8000']
+
   - job_name: 'dequeuer_nginx'
     static_configs:
       - targets: ['dequeuer_nginx:8001']
@@ -14,6 +18,10 @@ scrape_configs:
   - job_name: 'dequeuer_google'
     static_configs:
       - targets: ['dequeuer_google:8001']
+
+  - job_name: 'dequeuer_httpbin'
+    static_configs:
+      - targets: ['dequeuer_httpbin:8001']
 
   - job_name: 'dequeuer_url_fetcher'
     static_configs:

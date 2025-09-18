@@ -3,4 +3,5 @@ pika
 uvicorn
 aio_pika
 pydantic-settings
-prometheus_client 
+prometheus_client
+redis 
